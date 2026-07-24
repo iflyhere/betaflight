@@ -92,6 +92,11 @@
 #define TELEMETRY_MAVLINK_MAXRATE 50
 #define TELEMETRY_MAVLINK_DELAY ((1000 * 1000) / TELEMETRY_MAVLINK_MAXRATE)
 
+// Second, dedicated MAVLink telemetry output (e.g. for SoftRF): its own channel, forced
+// to MAVLink v1, streamed transmit-only at ~2 Hz.
+#define TELEMETRY_MAVLINK_SOFTRF_CHANNEL MAVLINK_COMM_2
+#define TELEMETRY_MAVLINK_SOFTRF_DELAY   (1000 * 1000 / 2)
+
 #define MAVLINK_SYSTEM_ID 1
 #define MAVLINK_COMPONENT_ID MAV_COMP_ID_AUTOPILOT1
 extern uint16_t rssi; // FIXME dependency on mw.c
@@ -107,6 +112,15 @@ static armingDisableFlags_e lastArmingDisableFlags = 0;
 static mavlink_message_t mavRxMsg;
 static mavlink_status_t mavRxStatus;
 static bool mavlinkPortOwned = false;
+
+// Second, dedicated MAVLink telemetry output (see configureMAVLinkSoftrfPort): a
+// transmit-only, MAVLink v1 stream on its own channel, e.g. to feed a SoftRF device
+// whose parser only understands MAVLink v1. Independent of the primary v2 path.
+static serialPort_t *softrfPort = NULL;
+static const serialPortConfig_t *softrfPortConfig = NULL;
+static portSharing_e softrfPortSharing;
+static bool softrfTelemetryEnabled = false;
+static uint32_t softrfLastMessageTime = 0;
 
 // Betaflight-specific MAVLink custom_mode values. Stable enumeration emitted in
 // HEARTBEAT.custom_mode and advertised via AVAILABLE_MODES; consumed in T3 by
@@ -594,7 +608,13 @@ void freeMAVLinkTelemetryPort(void)
 void initMAVLinkTelemetry(void)
 {
     portConfig = findSerialPortConfig(FUNCTION_TELEMETRY_MAVLINK);
+    // A second MAVLink telemetry port (next in serial-identifier order) becomes a
+    // dedicated MAVLink v1 output for devices that only speak v1 (e.g. SoftRF on a
+    // RadioMaster XR1). Fetch it via findNextSerialPortConfig() immediately, before any
+    // other call can reset the port-config search cursor.
+    softrfPortConfig = portConfig ? findNextSerialPortConfig(FUNCTION_TELEMETRY_MAVLINK) : NULL;
     mavlinkPortSharing = determinePortSharing(portConfig, FUNCTION_TELEMETRY_MAVLINK);
+    softrfPortSharing = determinePortSharing(softrfPortConfig, FUNCTION_TELEMETRY_MAVLINK);
 }
 
 void configureMAVLinkTelemetryPort(void)
@@ -622,6 +642,106 @@ void configureMAVLinkTelemetryPort(void)
     mavlinkTelemetryEnabled = true;
 #if ENABLE_TELEMETRY_MAVLINK_MISSION
     mavMissionInit();
+#endif
+}
+
+// --- Second MAVLink telemetry output, forced to MAVLink v1 (e.g. for SoftRF) ---------
+// SoftRF's bundled MAVLink parser is v1-only, while Betaflight otherwise emits v2 on the
+// primary port. This dedicated, transmit-only emitter streams just the messages SoftRF
+// needs (HEARTBEAT, SYSTEM_TIME, GPS_RAW_INT) on its own channel (COMM_2) forced to v1,
+// leaving the primary QGroundControl/v2 path completely untouched.
+
+static void mavlinkSoftrfWrite(uint8_t *buf, uint16_t length)
+{
+    for (int i = 0; i < length; i++) {
+        serialWrite(softrfPort, buf[i]);
+    }
+}
+
+static void configureMAVLinkSoftrfPort(void)
+{
+    if (!softrfPortConfig) {
+        return;
+    }
+
+    baudRate_e baudRateIndex = softrfPortConfig->telemetry_baudrateIndex;
+    if (baudRateIndex == BAUD_AUTO) {
+        baudRateIndex = BAUD_57600; // SoftRF UAV input is fixed at 57600
+    }
+
+    softrfPort = openSerialPort(softrfPortConfig->identifier, FUNCTION_TELEMETRY_MAVLINK, NULL, NULL, baudRates[baudRateIndex], MODE_TX, telemetryConfig()->telemetry_inverted ? SERIAL_INVERTED : SERIAL_NOT_INVERTED);
+
+    if (!softrfPort) {
+        return;
+    }
+
+    mavlink_reset_channel_status(TELEMETRY_MAVLINK_SOFTRF_CHANNEL);
+    mavlink_set_proto_version(TELEMETRY_MAVLINK_SOFTRF_CHANNEL, 1); // emit MAVLink v1 on this channel
+    softrfTelemetryEnabled = true;
+}
+
+static void freeMAVLinkSoftrfPort(void)
+{
+    closeSerialPort(softrfPort);
+    softrfPort = NULL;
+    softrfTelemetryEnabled = false;
+}
+
+static void handleMAVLinkSoftrfTelemetry(void)
+{
+    if (!softrfTelemetryEnabled || !softrfPort) {
+        return;
+    }
+
+    const uint32_t now = micros();
+    if ((now - softrfLastMessageTime) < TELEMETRY_MAVLINK_SOFTRF_DELAY) {
+        return;
+    }
+    softrfLastMessageTime = now;
+
+    uint16_t msgLength;
+
+    // HEARTBEAT - SoftRF only needs its presence and the sender's sysid/compid.
+    mavlink_msg_heartbeat_pack_chan(MAVLINK_SYSTEM_ID, MAVLINK_COMPONENT_ID, TELEMETRY_MAVLINK_SOFTRF_CHANNEL, &mavMsg,
+        MAV_TYPE_QUADROTOR,
+        MAV_AUTOPILOT_GENERIC,
+        ARMING_FLAG(ARMED) ? (MAV_MODE_MANUAL_DISARMED | MAV_MODE_MANUAL_ARMED) : MAV_MODE_MANUAL_DISARMED,
+        0,
+        ARMING_FLAG(ARMED) ? MAV_STATE_ACTIVE : MAV_STATE_STANDBY);
+    msgLength = mavlink_msg_to_send_buffer(mavBuffer, &mavMsg);
+    mavlinkSoftrfWrite(mavBuffer, msgLength);
+
+    // SYSTEM_TIME - SoftRF uses accurate GNSS time for FLARM/OGN/ADS-L frequency hopping.
+    uint64_t timeUnixUsec = 0;
+#ifdef USE_RTC_TIME
+    rtcTime_t rtcMs;
+    if (rtcHasTime() && rtcGet(&rtcMs) && rtcMs > 0) {
+        timeUnixUsec = (uint64_t)rtcMs * 1000ULL;
+    }
+#endif
+    mavlink_msg_system_time_pack_chan(MAVLINK_SYSTEM_ID, MAVLINK_COMPONENT_ID, TELEMETRY_MAVLINK_SOFTRF_CHANNEL, &mavMsg,
+        timeUnixUsec, millis());
+    msgLength = mavlink_msg_to_send_buffer(mavBuffer, &mavMsg);
+    mavlinkSoftrfWrite(mavBuffer, msgLength);
+
+#if defined(USE_GPS)
+    // GPS_RAW_INT - the aircraft's own position, which SoftRF re-broadcasts.
+    if (sensors(SENSOR_GPS)) {
+        uint8_t gpsFixType;
+        if (!STATE(GPS_FIX)) {
+            gpsFixType = 1;
+        } else if (gpsSol.numSat < GPS_MIN_SAT_COUNT) {
+            gpsFixType = 2;
+        } else {
+            gpsFixType = 3;
+        }
+        mavlink_msg_gps_raw_int_pack_chan(MAVLINK_SYSTEM_ID, MAVLINK_COMPONENT_ID, TELEMETRY_MAVLINK_SOFTRF_CHANNEL, &mavMsg,
+            micros(), gpsFixType, gpsSol.llh.lat, gpsSol.llh.lon, gpsSol.llh.altCm * 10,
+            gpsSol.dop.hdop, gpsSol.dop.vdop, gpsSol.groundSpeed, gpsSol.groundCourse * 10, gpsSol.numSat,
+            gpsSol.llh.altCm * 10, gpsSol.acc.hAcc, gpsSol.acc.vAcc, gpsSol.acc.sAcc, UINT32_MAX, 0);
+        msgLength = mavlink_msg_to_send_buffer(mavBuffer, &mavMsg);
+        mavlinkSoftrfWrite(mavBuffer, msgLength);
+    }
 #endif
 }
 
@@ -1281,6 +1401,20 @@ static void processMAVLinkTelemetry(void)
 
 void checkMAVLinkTelemetryState(void)
 {
+    // Second, dedicated MAVLink v1 output (e.g. SoftRF), managed independently of the
+    // primary port so it keeps streaming even when the primary link is down. Handled
+    // first because the primary path below may return early when its state is unchanged.
+    if (softrfPortConfig) {
+        const bool softrfEnable = telemetryDetermineEnabledState(softrfPortSharing);
+        if (softrfEnable != softrfTelemetryEnabled) {
+            if (softrfEnable) {
+                configureMAVLinkSoftrfPort();
+            } else {
+                freeMAVLinkSoftrfPort();
+            }
+        }
+    }
+
     if (portConfig && telemetryCheckRxPortShared(portConfig, rxRuntimeState.serialrxProvider)) {
         if (!mavlinkTelemetryEnabled && telemetrySharedPort != NULL) {
             mavlinkPort = telemetrySharedPort;
@@ -1307,6 +1441,9 @@ void checkMAVLinkTelemetryState(void)
 
 void handleMAVLinkTelemetry(void)
 {
+    // Service the dedicated SoftRF (v1) output independently of the primary port state.
+    handleMAVLinkSoftrfTelemetry();
+
     if (!mavlinkTelemetryEnabled || !mavlinkPort) {
         return;
     }

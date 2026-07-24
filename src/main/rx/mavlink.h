@@ -17,7 +17,7 @@
 
 #pragma once
 
-#define MAVLINK_COMM_NUM_BUFFERS 2
+#define MAVLINK_COMM_NUM_BUFFERS 3 // COMM_0: primary TX (v2), COMM_1: primary RX, COMM_2: second/SoftRF TX (v1)
 #define RSSI_DBM_MIN (-130)
 #define RSSI_DBM_MAX 0
 
