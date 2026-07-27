@@ -271,6 +271,7 @@ COMMON_SRC = \
             io/gimbal_control.c \
             io/rcdevice_cam.c \
             io/rcdevice.c \
+            io/adsb.c \
             io/gps.c \
             io/ledstrip.c \
             io/pidaudio.c \

@@ -494,6 +494,12 @@
 #define USE_TELEMETRY_MAVLINK
 #endif
 
+// ADS-B / FLARM traffic awareness (io/adsb.c) receives MAVLink ADSB_VEHICLE messages
+// and needs GPS to compute range/bearing to traffic.
+#if defined(USE_TELEMETRY_MAVLINK) && defined(USE_GPS) && !defined(USE_ADSB)
+#define USE_ADSB
+#endif
+
 // USE_RACE_PRO feature pack
 #ifdef USE_RACE_PRO
 

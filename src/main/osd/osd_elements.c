@@ -162,6 +162,9 @@
 #include "flight/pid.h"
 
 #include "io/gps.h"
+#ifdef USE_ADSB
+#include "io/adsb.h"
+#endif
 #include "io/vtx.h"
 
 #include "osd/osd.h"
@@ -2120,6 +2123,89 @@ static const uint8_t osdElementDisplayOrder[] = {
 #endif
 };
 
+#if defined(USE_GPS) && defined(USE_ADSB)
+
+#define OSD_ADSB_WARNING_LINE_LEN 13
+
+// Closest ADS-B/FLARM traffic: distance + bearing arrow + relative altitude (line 1),
+// and in EXTENDED style the emitter type + heading arrow + ground speed (line 2).
+static void osdElementAdsbWarning(osdElementParms_t *element)
+{
+    const int ownHeadingDeg = DECIDEGREES_TO_DEGREES(attitude.values.yaw);
+
+    adsbVehicle_t *vehicle = findVehicleClosestLimit((int32_t)osdConfig()->adsb_ignore_plane_above_me_limit * 100);
+    if (vehicle != NULL) {
+        recalculateVehicle(vehicle);
+    }
+
+    const bool show = (vehicle != NULL)
+        && (vehicle->calculatedVehicleValues.dist > 0)
+        && (vehicle->calculatedVehicleValues.dist < (uint32_t)osdConfig()->adsb_distance_warning * 100)
+        && isEnvironmentOkForCalculatingADSBDistanceBearing();
+
+    // Line 1 (drawn by the element framework via element->buff)
+    int len = 0;
+    if (show) {
+        osdFormatDistanceString(element->buff, (int)(vehicle->calculatedVehicleValues.dist / 100), 'A');
+        len = strlen(element->buff);
+        element->buff[len++] = osdGetDirectionSymbolFromHeading((vehicle->calculatedVehicleValues.dir / 100) - ownHeadingDeg);
+        osdFormatAltitudeString(&element->buff[len], vehicle->calculatedVehicleValues.verticalDistance, element->type);
+        len = strlen(element->buff);
+
+        if (vehicle->calculatedVehicleValues.dist < (uint32_t)osdConfig()->adsb_distance_alert * 100) {
+            SET_BLINK(element->item);
+        } else {
+            CLR_BLINK(element->item);
+        }
+    } else {
+        CLR_BLINK(element->item);
+    }
+    // Pad to a fixed width so a shorter/absent readout clears any previous text
+    while (len < OSD_ADSB_WARNING_LINE_LEN) {
+        element->buff[len++] = SYM_BLANK;
+    }
+    element->buff[len] = '\0';
+
+    // Line 2 (extended style): emitter type + target heading arrow + ground speed
+    if (osdConfig()->adsb_warning_style == OSD_ADSB_WARNING_STYLE_EXTENDED) {
+        char line2[OSD_ELEMENT_BUFFER_LENGTH];
+        int p = 0;
+        if (show) {
+            const char *type = getAdsbEmitterTypeString(vehicle->vehicleValues.emitterType);
+            for (int i = 0; i < 6 && type[i]; i++) {
+                line2[p++] = type[i];
+            }
+            line2[p++] = osdGetDirectionSymbolFromHeading((vehicle->vehicleValues.heading / 100) - ownHeadingDeg);
+            tfp_sprintf(&line2[p], "%3d", (int)osdGetSpeedToSelectedUnit(vehicle->vehicleValues.horVelocity));
+            p = strlen(line2);
+        }
+        while (p < OSD_ADSB_WARNING_LINE_LEN) {
+            line2[p++] = SYM_BLANK;
+        }
+        line2[p] = '\0';
+        displayWrite(element->osdDisplayPort, element->elemPosX, element->elemPosY + 1, DISPLAYPORT_SEVERITY_NORMAL, line2);
+    }
+}
+
+// Traffic status: active vehicle count, or '-' (no data), 'G' (no GPS fix)
+static void osdElementAdsbInfo(osdElementParms_t *element)
+{
+    element->buff[0] = 'A';
+    if (getAdsbStatus()->vehiclesMessagesTotal == 0 && getAdsbStatus()->heartbeatMessagesTotal == 0) {
+        element->buff[1] = SYM_HYPHEN;
+        element->buff[2] = SYM_BLANK;
+        element->buff[3] = '\0';
+    } else if (!isEnvironmentOkForCalculatingADSBDistanceBearing()) {
+        element->buff[1] = 'G';
+        element->buff[2] = SYM_BLANK;
+        element->buff[3] = '\0';
+    } else {
+        tfp_sprintf(&element->buff[1], "%2d", getActiveVehiclesCount());
+    }
+}
+
+#endif // USE_GPS && USE_ADSB
+
 // Define the mapping between the OSD element id and the function to draw it
 
 const osdElementDrawFn osdElementDrawFunction[OSD_ITEM_COUNT] = {
@@ -2188,6 +2274,10 @@ const osdElementDrawFn osdElementDrawFunction[OSD_ITEM_COUNT] = {
 #ifdef USE_GPS
     [OSD_HOME_DIR]                = osdElementGpsHomeDirection,
     [OSD_HOME_DIST]               = osdElementGpsHomeDistance,
+#ifdef USE_ADSB
+    [OSD_ADSB_WARNING]            = osdElementAdsbWarning,
+    [OSD_ADSB_INFO]               = osdElementAdsbInfo,
+#endif
 #endif
     [OSD_NUMERICAL_HEADING]       = osdElementNumericalHeading,
 #ifdef USE_VARIO

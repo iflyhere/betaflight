@@ -60,6 +60,9 @@
 #include "io/serial.h"
 #include "io/gimbal.h"
 #include "io/gps.h"
+#ifdef USE_ADSB
+#include "io/adsb.h"
+#endif
 #include "io/ledstrip.h"
 
 #include "rx/rx.h"
@@ -250,7 +253,16 @@ static void mavlinkSendSystemTime(void)
 
 static void handleHeartbeatRx(const mavlink_message_t *msg)
 {
+#ifdef USE_ADSB
+    // A SoftRF/ADS-B bridge announces itself with a MAV_TYPE_ADSB heartbeat.
+    mavlink_heartbeat_t heartbeat;
+    mavlink_msg_heartbeat_decode(msg, &heartbeat);
+    if (heartbeat.type == MAV_TYPE_ADSB) {
+        adsbHeartbeat();
+    }
+#else
     UNUSED(msg);
+#endif
     // Stub for now; later tiers will track GCS liveness and target replies by sysid/compid.
 }
 
@@ -548,6 +560,30 @@ static void handleCommandLong(const mavlink_message_t *msg)
     }
 }
 
+#ifdef USE_ADSB
+static void handleAdsbVehicle(const mavlink_message_t *msg)
+{
+    mavlink_adsb_vehicle_t adsbMsg;
+    mavlink_msg_adsb_vehicle_decode(msg, &adsbMsg);
+
+    adsbVehicleValues_t *vehicle = getVehicleForFill();
+    if (vehicle != NULL) {
+        vehicle->icao = adsbMsg.ICAO_address;
+        vehicle->gps.lat = adsbMsg.lat;
+        vehicle->gps.lon = adsbMsg.lon;
+        vehicle->alt = (int32_t)(adsbMsg.altitude / 10); // MAVLink mm -> cm
+        vehicle->horVelocity = adsbMsg.hor_velocity;
+        vehicle->heading = adsbMsg.heading;
+        vehicle->flags = adsbMsg.flags;
+        vehicle->altitudeType = adsbMsg.altitude_type;
+        memcpy(vehicle->callsign, adsbMsg.callsign, sizeof(vehicle->callsign));
+        vehicle->emitterType = adsbMsg.emitter_type;
+        vehicle->tslc = adsbMsg.tslc;
+        adsbNewVehicle(vehicle);
+    }
+}
+#endif
+
 static void mavlinkDispatch(const mavlink_message_t *msg)
 {
     switch (msg->msgid) {
@@ -563,6 +599,11 @@ static void mavlinkDispatch(const mavlink_message_t *msg)
     case MAVLINK_MSG_ID_COMMAND_LONG:
         handleCommandLong(msg);
         break;
+#ifdef USE_ADSB
+    case MAVLINK_MSG_ID_ADSB_VEHICLE:
+        handleAdsbVehicle(msg);
+        break;
+#endif
     default:
 #if ENABLE_TELEMETRY_MAVLINK_MISSION
         mavMissionHandleMessage(msg);
@@ -669,7 +710,11 @@ static void configureMAVLinkSoftrfPort(void)
         baudRateIndex = BAUD_57600; // SoftRF UAV input is fixed at 57600
     }
 
-    softrfPort = openSerialPort(softrfPortConfig->identifier, FUNCTION_TELEMETRY_MAVLINK, NULL, NULL, baudRates[baudRateIndex], MODE_TX, telemetryConfig()->telemetry_inverted ? SERIAL_INVERTED : SERIAL_NOT_INVERTED);
+    portMode_e softrfMode = MODE_TX;
+#ifdef USE_ADSB
+    softrfMode = MODE_RXTX; // also receive ADSB_VEHICLE traffic reports back from the device
+#endif
+    softrfPort = openSerialPort(softrfPortConfig->identifier, FUNCTION_TELEMETRY_MAVLINK, NULL, NULL, baudRates[baudRateIndex], softrfMode, telemetryConfig()->telemetry_inverted ? SERIAL_INVERTED : SERIAL_NOT_INVERTED);
 
     if (!softrfPort) {
         return;
@@ -687,11 +732,39 @@ static void freeMAVLinkSoftrfPort(void)
     softrfTelemetryEnabled = false;
 }
 
+#ifdef USE_ADSB
+static mavlink_message_t softrfRxMsg;
+static mavlink_status_t softrfRxStatus;
+
+// Parse MAVLink arriving from the SoftRF device (ADSB_VEHICLE traffic reports, ADS-B heartbeat).
+static void mavlinkProcessSoftrfIncoming(void)
+{
+    if (!softrfPort) {
+        return;
+    }
+    // Bound the drain so a flooded link cannot starve the telemetry task.
+    uint16_t rxBudget = 64;
+    uint32_t rxBytesWaiting = serialRxBytesWaiting(softrfPort);
+    while (rxBudget-- && rxBytesWaiting-- > 0) {
+        const uint8_t c = serialRead(softrfPort);
+        if (mavlink_parse_char(TELEMETRY_MAVLINK_SOFTRF_CHANNEL, c, &softrfRxMsg, &softrfRxStatus) == MAVLINK_FRAMING_OK) {
+            mavlinkDispatch(&softrfRxMsg);
+        }
+    }
+}
+#endif
+
 static void handleMAVLinkSoftrfTelemetry(void)
 {
     if (!softrfTelemetryEnabled || !softrfPort) {
         return;
     }
+
+#ifdef USE_ADSB
+    // Receive/expire traffic every cycle, independent of the (rate-limited) transmit path.
+    mavlinkProcessSoftrfIncoming();
+    adsbTtlClean(micros());
+#endif
 
     const uint32_t now = micros();
     if ((now - softrfLastMessageTime) < TELEMETRY_MAVLINK_SOFTRF_DELAY) {

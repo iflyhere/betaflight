@@ -201,6 +201,10 @@ typedef enum {
     OSD_LIDAR_DIST,
     OSD_CUSTOM_SERIAL_TEXT,
     OSD_BATTERY_PROFILE_NAME,
+#ifdef USE_ADSB
+    OSD_ADSB_WARNING,
+    OSD_ADSB_INFO,
+#endif
 
 #if defined(USE_GPS) && ENABLE_FLIGHT_PLAN
     // Waypoint elements
@@ -337,6 +341,11 @@ STATIC_ASSERT(OSD_WARNING_COUNT <= 32, osdwarnings_overflow);
 extern const uint16_t osdTimerDefault[OSD_TIMER_COUNT];
 extern const osd_stats_e osdStatsDisplayOrder[OSD_STAT_COUNT];
 
+typedef enum {
+    OSD_ADSB_WARNING_STYLE_COMPACT = 0,
+    OSD_ADSB_WARNING_STYLE_EXTENDED,
+} osd_adsb_warning_style_e;
+
 typedef struct osdConfig_s {
     // Alarms
     uint16_t cap_alarm;
@@ -388,6 +397,12 @@ typedef struct osdConfig_s {
     uint8_t osd_show_spec_prearm;
 #endif // USE_SPEC_PREARM_SCREEN
     displayPortSeverity_e arming_logo;        // font from which to display logo on arming
+#ifdef USE_ADSB
+    uint16_t adsb_distance_warning;            // distance (m) within which ADS-B traffic is shown
+    uint16_t adsb_distance_alert;              // distance (m) inside which the warning blinks
+    uint16_t adsb_ignore_plane_above_me_limit; // ignore planes more than this (m) above us, 0 = off
+    uint8_t adsb_warning_style;                // osd_adsb_warning_style_e
+#endif
 } osdConfig_t;
 
 PG_DECLARE(osdConfig_t, osdConfig);

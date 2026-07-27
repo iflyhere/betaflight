@@ -159,9 +159,9 @@ escSensorData_t *osdEscDataCombined;
 
 STATIC_ASSERT(OSD_POS_MAX == OSD_POS(63,31), OSD_POS_MAX_incorrect);
 
-PG_REGISTER_WITH_RESET_FN(osdConfig_t, osdConfig, PG_OSD_CONFIG, 13);
+PG_REGISTER_WITH_RESET_FN(osdConfig_t, osdConfig, PG_OSD_CONFIG, 14);
 
-PG_REGISTER_WITH_RESET_FN(osdElementConfig_t, osdElementConfig, PG_OSD_ELEMENT_CONFIG, 3);
+PG_REGISTER_WITH_RESET_FN(osdElementConfig_t, osdElementConfig, PG_OSD_ELEMENT_CONFIG, 4);
 
 // Controls the display order of the OSD post-flight statistics.
 // Adjust the ordering here to control how the post-flight stats are presented.
@@ -433,6 +433,13 @@ void pgResetFn_osdConfig(osdConfig_t *osdConfig)
 #ifdef USE_RACE_PRO
     osdConfig->osd_show_spec_prearm = true;
 #endif // USE_RACE_PRO
+
+#ifdef USE_ADSB
+    osdConfig->adsb_distance_warning = 20000;          // m
+    osdConfig->adsb_distance_alert = 3000;             // m
+    osdConfig->adsb_ignore_plane_above_me_limit = 0;   // m, 0 = disabled
+    osdConfig->adsb_warning_style = OSD_ADSB_WARNING_STYLE_EXTENDED;
+#endif
 }
 
 void pgResetFn_osdElementConfig(osdElementConfig_t *osdElementConfig)
@@ -468,6 +475,11 @@ void pgResetFn_osdElementConfig(osdElementConfig_t *osdElementConfig)
     // multi-row map: default to the top-left corner so it never overlaps the
     // centred defaults of the single-row elements
     osdElementConfig->item_pos[OSD_NAV_MAP]            = OSD_POS(1, 1);
+#endif
+#ifdef USE_ADSB
+    // Traffic elements: visible in all profiles by default, top-left to avoid overlap
+    osdElementConfig->item_pos[OSD_ADSB_INFO]    = OSD_POS(2, 2) | profileFlags;
+    osdElementConfig->item_pos[OSD_ADSB_WARNING] = OSD_POS(2, 3) | profileFlags;
 #endif
 }
 

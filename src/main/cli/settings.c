@@ -1715,6 +1715,14 @@ const clivalue_t valueTable[] = {
     { PARAM_NAME_OSD_NAV_MAP_CENTRE,      VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, OSD_NAV_MAP_CENTRE_COUNT - 1 }, PG_OSD_NAV_MAP_CONFIG, offsetof(osdNavMapConfig_t, centre) },
     { PARAM_NAME_OSD_NAV_MAP_MIN_SCALE_M, VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 20, 5000 },                        PG_OSD_NAV_MAP_CONFIG, offsetof(osdNavMapConfig_t, minScaleM) },
 #endif // USE_OSD_NAV_MAP
+#ifdef USE_ADSB
+    { "osd_adsb_distance_warning",  VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 1, 64000 }, PG_OSD_CONFIG, offsetof(osdConfig_t, adsb_distance_warning) },
+    { "osd_adsb_distance_alert",    VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 1, 64000 }, PG_OSD_CONFIG, offsetof(osdConfig_t, adsb_distance_alert) },
+    { "osd_adsb_ignore_plane_above_me_limit", VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 0, 64000 }, PG_OSD_CONFIG, offsetof(osdConfig_t, adsb_ignore_plane_above_me_limit) },
+    { "osd_adsb_warning_style",     VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 1 }, PG_OSD_CONFIG, offsetof(osdConfig_t, adsb_warning_style) }, // 0=compact, 1=extended
+    { "osd_adsb_warning_pos",       VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 0, OSD_POSCFG_MAX }, PG_OSD_ELEMENT_CONFIG, offsetof(osdElementConfig_t, item_pos[OSD_ADSB_WARNING]) },
+    { "osd_adsb_info_pos",          VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 0, OSD_POSCFG_MAX }, PG_OSD_ELEMENT_CONFIG, offsetof(osdElementConfig_t, item_pos[OSD_ADSB_INFO]) },
+#endif // USE_ADSB
 #endif // end of #ifdef USE_OSD
 
 // PG_SYSTEM_CONFIG
