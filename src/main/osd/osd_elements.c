@@ -2422,6 +2422,10 @@ void osdAddActiveElements(void)
         osdAddActiveElement(OSD_GPS_LON);
         osdAddActiveElement(OSD_HOME_DIST);
         osdAddActiveElement(OSD_HOME_DIR);
+#ifdef USE_ADSB
+        osdAddActiveElement(OSD_ADSB_WARNING);
+        osdAddActiveElement(OSD_ADSB_INFO);
+#endif
         osdAddActiveElement(OSD_FLIGHT_DIST);
         osdAddActiveElement(OSD_EFFICIENCY);
 #if ENABLE_FLIGHT_PLAN
